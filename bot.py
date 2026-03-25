@@ -1,10 +1,10 @@
 """
-CrackHire Voice Interview Bot with WebRTC
+CrackHire Voice Interview Bot
 - VAD: Silero
-- STT: Deepgram (streaming)
+- STT: OpenAI Whisper
 - LLM: Groq/Minimax
 - TTS: Piper (local, free)
-- Transport: WebRTC (using aiortc)
+- Transport: WebSocket
 """
 
 import asyncio
@@ -21,7 +21,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")  # For Whisper STT
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")  # Optional fallback
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "sk-cp-TEg2nDH0hdf4pMgLLgNjWEbUJv0oTeBCPU6GmdfeKfCWy8Mz3WHZdsYOVtmWnGo_1MVCOSw3FeKLUY84QKZYSs_9jKjb5W-jngsIeA5evnUEZA_z9uENvkI")
 PIPER_VOICE_PATH = os.environ.get("PIPER_VOICE_PATH", "/home/ubuntu/.openclaw/workspace/backend/data/piper_voices")
@@ -57,23 +58,36 @@ Focus on: data structures, algorithms, system design, or past projects."""}]
         self.is_speaking = False
         
     async def transcribe(self, audio_data: bytes) -> str:
-        """Convert audio to text using Deepgram."""
-        if not DEEPGRAM_API_KEY:
-            logger.warning("No Deepgram API key")
+        """Convert audio to text using OpenAI Whisper."""
+        if not OPENAI_API_KEY:
+            logger.warning("No OpenAI API key for Whisper")
             return ""
         
         try:
+            import base64
             import aiohttp
+            
+            # Encode audio to base64
+            audio_base64 = base64.b64encode(audio_data).decode()
+            
             async with aiohttp.ClientSession() as session:
-                url = "https://api.deepgram.com/v1/listen?model=nova-2&interim=true"
-                headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
-                async with session.post(url, data=audio_data, headers=headers) as resp:
-                    result = await resp.json()
-                    
-                    if result.get("results", {}).get("channels"):
-                        alternatives = result["results"]["channels"][0].get("alternatives", [])
-                        if alternatives:
-                            return alternatives[0].get("transcript", "")
+                url = "https://api.openai.com/v1/audio/transcriptions"
+                headers = {
+                    "Authorization": f"Bearer {OPENAI_API_KEY}"
+                }
+                
+                # Create form data
+                data = aiohttp.FormData()
+                data.add_field('file', audio_data, filename='audio.wav', content_type='audio/wav')
+                data.add_field('model', 'whisper-1')
+                data.add_field('language', 'en')
+                
+                async with session.post(url, data=data, headers=headers) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        return result.get("text", "")
+                    else:
+                        logger.error(f"Whisper API error: {resp.status}")
         except Exception as e:
             logger.error(f"STT error: {e}")
         return ""
@@ -220,11 +234,12 @@ async def health():
     return JSONResponse({
         "status": "healthy",
         "services": {
-            "stt": bool(DEEPGRAM_API_KEY),
+            "stt": bool(OPENAI_API_KEY),  # Whisper
             "llm": bool(LLM_API_KEY),
             "tts": True
         },
         "config": {
+            "stt": "whisper",
             "llm_provider": LLM_PROVIDER,
             "llm_model": LLM_MODEL,
             "tts": "piper",
