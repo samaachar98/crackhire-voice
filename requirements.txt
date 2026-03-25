@@ -1,0 +1,21 @@
+# Voice Backend Dependencies
+
+# Core
+pipecat-ai>=0.0.107
+piper-tts>=1.4.1
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# HTTP Client
+aiohttp>=3.9.0
+websockets>=12.0
+
+# LLM (via OpenAI-compatible API)
+openai>=1.0.0
+
+# Config
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
