@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")  # For Whisper STT
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")  # Optional fallback
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "sk-cp-TEg2nDH0hdf4pMgLLgNjWEbUJv0oTeBCPU6GmdfeKfCWy8Mz3WHZdsYOVtmWnGo_1MVCOSw3FeKLUY84QKZYSs_9jKjb5W-jngsIeA5evnUEZA_z9uENvkI")
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
 PIPER_VOICE_PATH = os.environ.get("PIPER_VOICE_PATH", "/home/ubuntu/.openclaw/workspace/backend/data/piper_voices")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
 
