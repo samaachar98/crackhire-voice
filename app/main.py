@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.orchestration.voice_pipeline import VoicePipeline
 from app.services.session_manager import SessionManager
 from app.models.session import SessionState
+from app.transports.webrtc import router as webrtc_router
 
 app = FastAPI(title='CrackHire Voice Bot')
 session_manager = SessionManager()
@@ -56,3 +57,6 @@ async def websocket_endpoint(websocket: WebSocket, interview_id: str):
     except WebSocketDisconnect:
         session_manager.remove(interview_id)
         return
+
+
+app.include_router(webrtc_router)
