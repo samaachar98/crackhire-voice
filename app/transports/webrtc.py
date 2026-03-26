@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Any
+import wave
+import io
+from fractions import Fraction
+from typing import Dict, Any, Optional
+
+import av
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.mediastreams import AudioStreamTrack
+
 from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET_SAMPLE_RATE
 from app.orchestration.voice_pipeline import VoicePipeline
 
@@ -16,6 +23,7 @@ session_buffers: Dict[str, bytearray] = {}
 session_events: Dict[str, dict[str, Any]] = {}
 session_turns: Dict[str, int] = {}
 session_last_audio_at: Dict[str, float] = {}
+session_outbound_tracks: Dict[str, 'OutboundAudioTrack'] = {}
 TURN_IDLE_SECONDS = 1.2
 MIN_BUFFER_BYTES = 16000
 
@@ -23,6 +31,39 @@ class OfferRequest(BaseModel):
     sdp: str
     type: str
     session_id: str
+
+class OutboundAudioTrack(AudioStreamTrack):
+    def __init__(self):
+        super().__init__()
+        self.queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self.sample_rate = TARGET_SAMPLE_RATE
+        self.samples_sent = 0
+        self.speaking = False
+
+    async def recv(self):
+        pcm = await self.queue.get()
+        if pcm is None:
+            pcm = b"\x00\x00" * 320
+            self.speaking = False
+        else:
+            self.speaking = True
+        frame = av.AudioFrame(format='s16', layout='mono', samples=len(pcm) // 2)
+        frame.sample_rate = self.sample_rate
+        frame.planes[0].update(pcm)
+        frame.pts = self.samples_sent
+        frame.time_base = Fraction(1, self.sample_rate)
+        self.samples_sent += frame.samples
+        return frame
+
+    async def push_wav_bytes(self, wav_bytes: bytes):
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wav:
+            frames = wav.readframes(wav.getnframes())
+            src_rate = wav.getframerate()
+        pcm = resample_int16_mono(frames, src_rate, self.sample_rate)
+        chunk_bytes = 320 * 2  # 20ms @16k mono int16
+        for i in range(0, len(pcm), chunk_bytes):
+            await self.queue.put(pcm[i:i + chunk_bytes])
+        await self.queue.put(None)
 
 async def finalize_turn(session_id: str):
     buffer = session_buffers.setdefault(session_id, bytearray())
@@ -44,7 +85,15 @@ async def finalize_turn(session_id: str):
         'audio_bytes_len': len(result['audio']) if result['audio'] else 0,
         'updated_at': time.time(),
         'error': None,
+        'speaking': False,
     }
+    track = session_outbound_tracks.get(session_id)
+    if track and result['audio']:
+        session_events[session_id]['state'] = 'speaking'
+        session_events[session_id]['speaking'] = True
+        await track.push_wav_bytes(result['audio'])
+        session_events[session_id]['state'] = 'listening'
+        session_events[session_id]['speaking'] = False
     buffer.clear()
     return True
 
@@ -62,6 +111,7 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
         'audio_bytes_len': 0,
         'updated_at': time.time(),
         'error': None,
+        'speaking': False,
     }
     try:
         while True:
@@ -76,7 +126,6 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
             session_events[session_id]['state'] = 'receiving_audio'
             session_events[session_id]['updated_at'] = now
 
-            # turn robustness: finalize only after enough audio and idle gap between frames
             if len(buffer) >= MIN_BUFFER_BYTES and (now - last) >= TURN_IDLE_SECONDS:
                 session_events[session_id]['state'] = 'processing'
                 await finalize_turn(session_id)
@@ -93,6 +142,7 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
             'audio_bytes_len': 0,
             'updated_at': time.time(),
             'error': str(e),
+            'speaking': False,
         }
         return
 
@@ -103,6 +153,7 @@ async def health():
         'transport': 'webrtc',
         'sessions': len(pcs),
         'workers': len(session_workers),
+        'outbound_tracks': len(session_outbound_tracks),
         'turn_idle_seconds': TURN_IDLE_SECONDS,
         'min_buffer_bytes': MIN_BUFFER_BYTES,
         'target_sample_rate': TARGET_SAMPLE_RATE,
@@ -116,6 +167,7 @@ async def session_event(session_id: str):
         'event': session_events.get(session_id),
         'has_peer_connection': session_id in pcs,
         'has_worker': session_id in session_workers,
+        'has_outbound_track': session_id in session_outbound_tracks,
         'buffer_bytes': len(session_buffers.get(session_id, bytearray())),
     }
 
@@ -135,6 +187,10 @@ async def offer(body: OfferRequest):
         session_buffers[body.session_id] = bytearray()
         session_turns[body.session_id] = 0
 
+        outbound = OutboundAudioTrack()
+        session_outbound_tracks[body.session_id] = outbound
+        pc.addTrack(outbound)
+
         @pc.on('track')
         def on_track(track: MediaStreamTrack):
             if track.kind == 'audio':
@@ -150,6 +206,7 @@ async def offer(body: OfferRequest):
                 pcs.pop(body.session_id, None)
                 session_buffers.pop(body.session_id, None)
                 session_last_audio_at.pop(body.session_id, None)
+                session_outbound_tracks.pop(body.session_id, None)
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
         answer = await pc.createAnswer()
