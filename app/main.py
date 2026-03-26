@@ -3,8 +3,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.orchestration.voice_pipeline import VoicePipeline
+from app.services.session_manager import SessionManager
+from app.models.session import SessionState
 
 app = FastAPI(title='CrackHire Voice Bot')
+session_manager = SessionManager()
 
 @app.get('/health')
 async def health():
@@ -27,6 +30,7 @@ async def health():
 async def websocket_endpoint(websocket: WebSocket, interview_id: str):
     await websocket.accept()
     pipeline = VoicePipeline()
+    session = session_manager.get_or_create(interview_id)
     audio_buffer = b''
     try:
         while True:
@@ -35,14 +39,20 @@ async def websocket_endpoint(websocket: WebSocket, interview_id: str):
             if msg_type == 'audio':
                 audio_buffer += base64.b64decode(data.get('data', ''))
             elif msg_type == 'stop' and audio_buffer:
+                session_manager.set_state(interview_id, SessionState.PROCESSING)
                 result = await pipeline.run_once(audio_buffer)
                 await websocket.send_json({'type': 'transcript', 'text': result['transcript']})
                 await websocket.send_json({'type': 'response', 'text': result['response'], 'metrics': result['metrics']})
                 if result['audio']:
+                    session_manager.set_state(interview_id, SessionState.SPEAKING)
                     await websocket.send_json({'type': 'audio', 'data': base64.b64encode(result['audio']).decode(), 'format': 'wav'})
+                session_manager.set_state(interview_id, SessionState.LISTENING)
                 audio_buffer = b''
             elif msg_type == 'interrupt':
                 audio_buffer = b''
+                session_manager.set_state(interview_id, SessionState.INTERRUPTED)
                 await websocket.send_json({'type': 'interrupt', 'status': 'stopped'})
+                session_manager.set_state(interview_id, SessionState.LISTENING)
     except WebSocketDisconnect:
+        session_manager.remove(interview_id)
         return
