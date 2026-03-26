@@ -6,6 +6,7 @@ from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from app.audio.pcm import frame_to_mono_int16_bytes
 
 from app.orchestration.voice_pipeline import VoicePipeline
 
@@ -66,7 +67,7 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
     try:
         while True:
             frame = await track.recv()
-            pcm = frame.to_ndarray().tobytes()
+            pcm = frame_to_mono_int16_bytes(frame)
             buffer.extend(pcm)
             session_last_audio_at[session_id] = time.time()
             session_events[session_id]['state'] = 'receiving_audio'
