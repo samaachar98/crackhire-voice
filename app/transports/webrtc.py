@@ -6,8 +6,7 @@ from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-from app.audio.pcm import frame_to_mono_int16_bytes
-
+from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET_SAMPLE_RATE
 from app.orchestration.voice_pipeline import VoicePipeline
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
@@ -28,7 +27,7 @@ class OfferRequest(BaseModel):
 async def finalize_turn(session_id: str):
     buffer = session_buffers.setdefault(session_id, bytearray())
     if len(buffer) < MIN_BUFFER_BYTES:
-        return
+        return False
     pipeline = VoicePipeline()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
     turn_id = session_turns[session_id]
@@ -41,13 +40,13 @@ async def finalize_turn(session_id: str):
         'transcript': result['transcript'],
         'response': result['response'],
         'metrics': result['metrics'],
-        'audio_b64': result['audio'].hex() if False else None,
         'has_audio': bool(result['audio']),
         'audio_bytes_len': len(result['audio']) if result['audio'] else 0,
         'updated_at': time.time(),
         'error': None,
     }
     buffer.clear()
+    return True
 
 async def audio_worker(session_id: str, track: MediaStreamTrack):
     buffer = session_buffers.setdefault(session_id, bytearray())
@@ -68,17 +67,19 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
         while True:
             frame = await track.recv()
             pcm = frame_to_mono_int16_bytes(frame)
+            src_rate = getattr(frame, 'sample_rate', TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE
+            pcm = resample_int16_mono(pcm, src_rate, TARGET_SAMPLE_RATE)
             buffer.extend(pcm)
-            session_last_audio_at[session_id] = time.time()
+            now = time.time()
+            last = session_last_audio_at.get(session_id, now)
+            session_last_audio_at[session_id] = now
             session_events[session_id]['state'] = 'receiving_audio'
-            session_events[session_id]['updated_at'] = time.time()
+            session_events[session_id]['updated_at'] = now
 
-            if len(buffer) >= MIN_BUFFER_BYTES:
-                now = time.time()
-                last = session_last_audio_at.get(session_id, now)
-                if now - last >= TURN_IDLE_SECONDS:
-                    session_events[session_id]['state'] = 'processing'
-                    await finalize_turn(session_id)
+            # turn robustness: finalize only after enough audio and idle gap between frames
+            if len(buffer) >= MIN_BUFFER_BYTES and (now - last) >= TURN_IDLE_SECONDS:
+                session_events[session_id]['state'] = 'processing'
+                await finalize_turn(session_id)
     except Exception as e:
         session_events[session_id] = {
             'version': 1,
@@ -104,6 +105,7 @@ async def health():
         'workers': len(session_workers),
         'turn_idle_seconds': TURN_IDLE_SECONDS,
         'min_buffer_bytes': MIN_BUFFER_BYTES,
+        'target_sample_rate': TARGET_SAMPLE_RATE,
     }
 
 @router.get('/session/{session_id}/events')
@@ -122,8 +124,8 @@ async def finalize_session_turn(session_id: str):
     if session_id not in pcs:
         raise HTTPException(status_code=404, detail='session_not_found')
     session_events.setdefault(session_id, {})['state'] = 'processing'
-    await finalize_turn(session_id)
-    return {'ok': True, 'session_id': session_id, 'event': session_events.get(session_id)}
+    completed = await finalize_turn(session_id)
+    return {'ok': True, 'session_id': session_id, 'completed': completed, 'event': session_events.get(session_id)}
 
 @router.post('/offer')
 async def offer(body: OfferRequest):
