@@ -7,6 +7,7 @@ from app.services.session_manager import SessionManager
 from app.models.session import SessionState
 from app.telemetry.metrics import metrics_store
 from app.transports.webrtc import router as webrtc_router
+from app.transports.ws_fallback import router as ws_fallback_router
 
 app = FastAPI(title='CrackHire Voice Bot')
 session_manager = SessionManager()
@@ -76,3 +77,5 @@ async def ready():
 @app.get('/metrics')
 async def metrics():
     return {'status': 'ok', 'metrics': metrics_store.summary()}
+
+app.include_router(ws_fallback_router)
