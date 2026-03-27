@@ -17,6 +17,7 @@ from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET
 from app.audio.vad import SileroVAD
 from app.audio.turn_detector import TurnDetector
 from app.orchestration.voice_pipeline import VoicePipeline
+from app.orchestration.pipecat_runtime import PipecatRuntime
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
 pcs: Dict[str, RTCPeerConnection] = {}
@@ -76,12 +77,12 @@ async def finalize_turn(session_id: str):
     buffer = session_buffers.setdefault(session_id, bytearray())
     if len(buffer) < MIN_BUFFER_BYTES:
         return False
-    pipeline = VoicePipeline()
+    runtime = PipecatRuntime()
     interrupt_event = session_interrupts.setdefault(session_id, asyncio.Event())
     interrupt_event.clear()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
     turn_id = session_turns[session_id]
-    result = await pipeline.run_once_interruptible(bytes(buffer), interrupt_event)
+    result = await runtime.run_turn(session_id, bytes(buffer), interrupt_event)
     if result.get('cancelled'):
         session_events[session_id] = {
             'version': 1,
