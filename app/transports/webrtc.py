@@ -84,7 +84,8 @@ async def finalize_turn(session_id: str):
     interrupt_event.clear()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
     turn_id = session_turns[session_id]
-    result = await runtime.run_turn(session_id, bytes(buffer), interrupt_event)
+    normalized_audio = runtime.normalize_ingress_audio(bytes(buffer))
+    result = await runtime.run_turn(session_id, normalized_audio, interrupt_event)
     if result.get('cancelled'):
         session_events[session_id] = {
             'state': 'interrupted',
