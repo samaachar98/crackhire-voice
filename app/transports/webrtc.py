@@ -15,6 +15,7 @@ from aiortc.mediastreams import AudioStreamTrack
 
 from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET_SAMPLE_RATE
 from app.audio.vad import SileroVAD
+from app.audio.turn_detector import TurnDetector
 from app.orchestration.voice_pipeline import VoicePipeline
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
@@ -28,6 +29,7 @@ session_outbound_tracks: Dict[str, 'OutboundAudioTrack'] = {}
 TURN_IDLE_SECONDS = 1.2
 MIN_BUFFER_BYTES = 16000
 vad = SileroVAD()
+turn_detector = TurnDetector(trailing_silence_seconds=0.5)
 
 class OfferRequest(BaseModel):
     sdp: str
@@ -128,9 +130,13 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
             session_events[session_id]['state'] = 'receiving_audio'
             session_events[session_id]['updated_at'] = now
 
-            if len(buffer) >= MIN_BUFFER_BYTES and vad.has_speech(bytes(buffer)) and (now - last) >= TURN_IDLE_SECONDS:
+            if vad.has_speech(pcm):
+                turn_detector.mark_speech(session_id)
+
+            if len(buffer) >= MIN_BUFFER_BYTES and turn_detector.should_finalize(session_id, now):
                 session_events[session_id]['state'] = 'processing'
                 await finalize_turn(session_id)
+                turn_detector.clear(session_id)
     except Exception as e:
         session_events[session_id] = {
             'version': 1,
@@ -209,6 +215,7 @@ async def offer(body: OfferRequest):
                 session_buffers.pop(body.session_id, None)
                 session_last_audio_at.pop(body.session_id, None)
                 session_outbound_tracks.pop(body.session_id, None)
+                turn_detector.clear(body.session_id)
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
         answer = await pc.createAnswer()
