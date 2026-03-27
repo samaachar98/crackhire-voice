@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.orchestration.voice_pipeline import VoicePipeline
 from app.services.session_manager import SessionManager
 from app.models.session import SessionState
+from app.telemetry.metrics import metrics_store
 from app.transports.webrtc import router as webrtc_router
 
 app = FastAPI(title='CrackHire Voice Bot')
@@ -60,3 +61,18 @@ async def websocket_endpoint(websocket: WebSocket, interview_id: str):
 
 
 app.include_router(webrtc_router)
+
+@app.get('/ready')
+async def ready():
+    return {
+        'status': 'ready' if (settings.openai_api_key and (settings.minimax_api_key or settings.groq_api_key) and settings.piper_voice_path) else 'partial',
+        'providers': {
+            'stt': bool(settings.openai_api_key),
+            'llm': bool(settings.minimax_api_key or settings.groq_api_key),
+            'tts': bool(settings.piper_voice_path),
+        }
+    }
+
+@app.get('/metrics')
+async def metrics():
+    return {'status': 'ok', 'metrics': metrics_store.summary()}
