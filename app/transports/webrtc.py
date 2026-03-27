@@ -14,6 +14,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.mediastreams import AudioStreamTrack
 
 from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET_SAMPLE_RATE
+from app.audio.vad import SileroVAD
 from app.orchestration.voice_pipeline import VoicePipeline
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
@@ -26,6 +27,7 @@ session_last_audio_at: Dict[str, float] = {}
 session_outbound_tracks: Dict[str, 'OutboundAudioTrack'] = {}
 TURN_IDLE_SECONDS = 1.2
 MIN_BUFFER_BYTES = 16000
+vad = SileroVAD()
 
 class OfferRequest(BaseModel):
     sdp: str
@@ -126,7 +128,7 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
             session_events[session_id]['state'] = 'receiving_audio'
             session_events[session_id]['updated_at'] = now
 
-            if len(buffer) >= MIN_BUFFER_BYTES and (now - last) >= TURN_IDLE_SECONDS:
+            if len(buffer) >= MIN_BUFFER_BYTES and vad.has_speech(bytes(buffer)) and (now - last) >= TURN_IDLE_SECONDS:
                 session_events[session_id]['state'] = 'processing'
                 await finalize_turn(session_id)
     except Exception as e:
