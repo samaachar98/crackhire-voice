@@ -18,6 +18,7 @@ from app.audio.vad import SileroVAD
 from app.audio.turn_detector import TurnDetector
 from app.orchestration.voice_pipeline import VoicePipeline
 from app.pipecat.runtime import PipecatRuntimeBootstrap
+from app.pipecat.events import make_event
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
 pcs: Dict[str, RTCPeerConnection] = {}
@@ -86,34 +87,26 @@ async def finalize_turn(session_id: str):
     result = await runtime.run_turn(session_id, bytes(buffer), interrupt_event)
     if result.get('cancelled'):
         session_events[session_id] = {
-            'version': 1,
-            'session_id': session_id,
-            'turn_id': turn_id,
             'state': 'interrupted',
-            'transcript': result.get('transcript'),
-            'response': result.get('response'),
-            'metrics': result.get('metrics'),
-            'has_audio': False,
-            'audio_bytes_len': 0,
             'updated_at': time.time(),
+            'events': [
+                make_event('turn.interrupted', session_id, turn_id, {'stage': result.get('stage')}),
+            ],
             'error': None,
             'speaking': False,
-            'cancelled_stage': result.get('stage'),
         }
         buffer.clear()
         return False
 
     session_events[session_id] = {
-        'version': 1,
-        'session_id': session_id,
-        'turn_id': turn_id,
         'state': 'completed',
-        'transcript': result['transcript'],
-        'response': result['response'],
-        'metrics': result['metrics'],
-        'has_audio': bool(result['audio']),
-        'audio_bytes_len': len(result['audio']) if result['audio'] else 0,
         'updated_at': time.time(),
+        'events': [
+            make_event('transcript.final', session_id, turn_id, {'text': result['transcript']}),
+            make_event('response.text', session_id, turn_id, {'text': result['response']}),
+            make_event('metrics.turn', session_id, turn_id, result['metrics']),
+            make_event('audio.ready', session_id, turn_id, {'has_audio': bool(result['audio']), 'audio_bytes_len': len(result['audio']) if result['audio'] else 0}),
+        ],
         'error': None,
         'speaking': False,
     }
@@ -134,16 +127,9 @@ async def finalize_turn(session_id: str):
 async def audio_worker(session_id: str, track: MediaStreamTrack):
     buffer = session_buffers.setdefault(session_id, bytearray())
     session_events[session_id] = {
-        'version': 1,
-        'session_id': session_id,
-        'turn_id': session_turns.get(session_id, 0),
         'state': 'listening',
-        'transcript': None,
-        'response': None,
-        'metrics': None,
-        'has_audio': False,
-        'audio_bytes_len': 0,
         'updated_at': time.time(),
+        'events': [make_event('state.listening', session_id, session_turns.get(session_id, 0), {})],
         'error': None,
         'speaking': False,
     }
@@ -175,16 +161,9 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
                 turn_detector.clear(session_id)
     except Exception as e:
         session_events[session_id] = {
-            'version': 1,
-            'session_id': session_id,
-            'turn_id': session_turns.get(session_id, 0),
             'state': 'error',
-            'transcript': None,
-            'response': None,
-            'metrics': None,
-            'has_audio': False,
-            'audio_bytes_len': 0,
             'updated_at': time.time(),
+            'events': [make_event('turn.error', session_id, session_turns.get(session_id, 0), {'message': str(e)})],
             'error': str(e),
             'speaking': False,
         }
