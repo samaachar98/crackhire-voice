@@ -17,7 +17,7 @@ from app.audio.pcm import frame_to_mono_int16_bytes, resample_int16_mono, TARGET
 from app.audio.vad import SileroVAD
 from app.audio.turn_detector import TurnDetector
 from app.orchestration.voice_pipeline import VoicePipeline
-from app.orchestration.pipecat_runtime import PipecatRuntime
+from app.pipecat.runtime import PipecatRuntimeBootstrap
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
 pcs: Dict[str, RTCPeerConnection] = {}
@@ -30,6 +30,7 @@ session_outbound_tracks: Dict[str, 'OutboundAudioTrack'] = {}
 session_interrupts: Dict[str, asyncio.Event] = {}
 TURN_IDLE_SECONDS = 1.2
 MIN_BUFFER_BYTES = 16000
+runtime_bootstrap = PipecatRuntimeBootstrap()
 vad = SileroVAD()
 turn_detector = TurnDetector(trailing_silence_seconds=0.5)
 
@@ -77,7 +78,7 @@ async def finalize_turn(session_id: str):
     buffer = session_buffers.setdefault(session_id, bytearray())
     if len(buffer) < MIN_BUFFER_BYTES:
         return False
-    runtime = PipecatRuntime()
+    runtime = runtime_bootstrap
     interrupt_event = session_interrupts.setdefault(session_id, asyncio.Event())
     interrupt_event.clear()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
@@ -253,6 +254,7 @@ async def offer(body: OfferRequest):
                 session_outbound_tracks.pop(body.session_id, None)
                 session_interrupts.pop(body.session_id, None)
                 turn_detector.clear(body.session_id)
+                runtime_bootstrap.remove_session(body.session_id)
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
         answer = await pc.createAnswer()
