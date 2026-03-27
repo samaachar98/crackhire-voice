@@ -52,3 +52,10 @@ Orchestration -> Transport output:
 
 ## Immediate implementation rule
 Before integrating Pipecat runtime, preserve this boundary so the repo does not collapse back into a monolith.
+
+
+## Current integration status
+- WebRTC turn execution now routes through `app/orchestration/pipecat_runtime.py`
+- provider wiring (Whisper / MiniMax / Piper) is owned by the runtime adapter
+- transport calls runtime, not providers directly
+- this is the current bridge step before a fuller Pipecat-native runtime replacement
