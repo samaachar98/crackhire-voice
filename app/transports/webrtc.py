@@ -150,7 +150,7 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
 
             # barge-in: if user speech comes in while bot is speaking, interrupt current output/turn
             if vad.has_speech(pcm):
-                turn_detector.mark_speech(session_id)
+                turn_detector.mark_speech(session_id, len(pcm))
                 evt = session_interrupts.setdefault(session_id, asyncio.Event())
                 if session_events.get(session_id, {}).get('speaking'):
                     evt.set()
