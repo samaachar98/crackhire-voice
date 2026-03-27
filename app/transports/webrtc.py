@@ -19,6 +19,7 @@ from app.audio.turn_detector import TurnDetector
 from app.orchestration.voice_pipeline import VoicePipeline
 from app.pipecat.runtime import PipecatRuntimeBootstrap
 from app.pipecat.events import make_event
+from app.services.turn_manager import TurnManager
 
 router = APIRouter(prefix='/webrtc', tags=['webrtc'])
 pcs: Dict[str, RTCPeerConnection] = {}
@@ -34,6 +35,7 @@ MIN_BUFFER_BYTES = 16000
 runtime_bootstrap = PipecatRuntimeBootstrap()
 vad = SileroVAD()
 turn_detector = TurnDetector(trailing_silence_seconds=0.5)
+turn_manager = TurnManager()
 
 class OfferRequest(BaseModel):
     sdp: str
@@ -84,8 +86,13 @@ async def finalize_turn(session_id: str):
     interrupt_event.clear()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
     turn_id = session_turns[session_id]
+    turn_manager.start_turn(session_id, turn_id)
     normalized_audio = runtime.normalize_ingress_audio(bytes(buffer))
     result = await runtime.run_turn(session_id, normalized_audio, interrupt_event)
+    if not turn_manager.is_current(session_id, turn_id):
+        buffer.clear()
+        return False
+
     if result.get('cancelled'):
         session_events[session_id] = {
             'state': 'interrupted',
@@ -124,6 +131,8 @@ async def finalize_turn(session_id: str):
             session_events[session_id]['state'] = 'listening'
             session_events[session_id]['speaking'] = False
     buffer.clear()
+    if turn_manager.is_current(session_id, turn_id):
+        turn_manager.clear(session_id)
     return True
 
 async def audio_worker(session_id: str, track: MediaStreamTrack):
@@ -235,6 +244,7 @@ async def offer(body: OfferRequest):
                 session_outbound_tracks.pop(body.session_id, None)
                 session_interrupts.pop(body.session_id, None)
                 turn_detector.clear(body.session_id)
+                turn_manager.clear(body.session_id)
                 runtime_bootstrap.remove_session(body.session_id)
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
