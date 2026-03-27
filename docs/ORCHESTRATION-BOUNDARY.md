@@ -1,61 +1,34 @@
 # Orchestration Boundary Design
 
-## Goal
-Define where Pipecat-oriented orchestration fits relative to transports, providers, and session lifecycle.
+## Updated architecture decision
+We are now targeting a **Pipecat-native realtime path** for lowest possible latency.
 
-## Boundary
-Transport layer responsibilities:
-- WebRTC / WS connection lifecycle
-- audio ingress / egress
-- session-bound track management
-- low-level interruption signal propagation
+## New direction
+Pipecat should own most of the realtime voice pipeline:
+- transport/runtime flow
+- realtime processing pipeline
+- VAD/STT/LLM/TTS sequencing
+- interruption-aware streaming behavior
 
-Orchestration layer responsibilities:
-- turn execution
-- state transitions tied to turn lifecycle
-- STT -> LLM -> TTS sequencing
-- interruption-aware cancellation boundaries
-- timing/metrics aggregation
+The app should still own:
+- config and secret loading
+- health/readiness endpoints
+- deployment/ops wrappers
+- auth/product-specific integration points
 
-Provider layer responsibilities:
-- Whisper STT implementation
-- MiniMax LLM implementation
-- Piper TTS implementation
-- provider-specific retries/errors/timeouts
+## Why this changed
+The project priority is low-latency speech-to-speech behavior.
+Compared to app-owned transport + internal orchestration, a more Pipecat-native path reduces glue layers and coordination overhead.
 
-Session layer responsibilities:
-- session registry
-- state machine
-- turn ids / request ids
-- cleanup / disconnect handling
+## Target stack
+- Pipecat-native realtime path
+- WebRTC primary transport
+- WebSocket fallback only if needed
+- Silero VAD
+- OpenAI Whisper STT
+- MiniMax M2.7 LLM
+- Piper local TTS
 
-## Pipecat target placement
-Pipecat should sit inside the orchestration boundary, not replace the whole app.
-That means:
-- transports remain app-controlled
-- provider config remains app-controlled
-- session manager remains app-controlled
-- Pipecat becomes the runtime/pipeline engine for turn execution
-
-## Interface contract
-Transport -> Orchestration input:
-- session_id
-- normalized PCM audio bytes
-- interruption event
-
-Orchestration -> Transport output:
-- transcript
-- response text
-- synthesized audio bytes/stream
-- metrics
-- final state
-
-## Immediate implementation rule
-Before integrating Pipecat runtime, preserve this boundary so the repo does not collapse back into a monolith.
-
-
-## Current integration status
-- WebRTC turn execution now routes through `app/orchestration/pipecat_runtime.py`
-- provider wiring (Whisper / MiniMax / Piper) is owned by the runtime adapter
-- transport calls runtime, not providers directly
-- this is the current bridge step before a fuller Pipecat-native runtime replacement
+## Migration note
+Current repo contains custom transport/orchestration scaffolding from earlier work.
+That code is transitional and should be progressively replaced or absorbed into the Pipecat-native path where appropriate.
