@@ -26,6 +26,7 @@ session_events: Dict[str, dict[str, Any]] = {}
 session_turns: Dict[str, int] = {}
 session_last_audio_at: Dict[str, float] = {}
 session_outbound_tracks: Dict[str, 'OutboundAudioTrack'] = {}
+session_interrupts: Dict[str, asyncio.Event] = {}
 TURN_IDLE_SECONDS = 1.2
 MIN_BUFFER_BYTES = 16000
 vad = SileroVAD()
@@ -59,13 +60,15 @@ class OutboundAudioTrack(AudioStreamTrack):
         self.samples_sent += frame.samples
         return frame
 
-    async def push_wav_bytes(self, wav_bytes: bytes):
+    async def push_wav_bytes(self, wav_bytes: bytes, interrupt_event: Optional[asyncio.Event] = None):
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wav:
             frames = wav.readframes(wav.getnframes())
             src_rate = wav.getframerate()
         pcm = resample_int16_mono(frames, src_rate, self.sample_rate)
-        chunk_bytes = 320 * 2  # 20ms @16k mono int16
+        chunk_bytes = 320 * 2
         for i in range(0, len(pcm), chunk_bytes):
+            if interrupt_event and interrupt_event.is_set():
+                break
             await self.queue.put(pcm[i:i + chunk_bytes])
         await self.queue.put(None)
 
@@ -74,9 +77,30 @@ async def finalize_turn(session_id: str):
     if len(buffer) < MIN_BUFFER_BYTES:
         return False
     pipeline = VoicePipeline()
+    interrupt_event = session_interrupts.setdefault(session_id, asyncio.Event())
+    interrupt_event.clear()
     session_turns[session_id] = session_turns.get(session_id, 0) + 1
     turn_id = session_turns[session_id]
-    result = await pipeline.run_once(bytes(buffer))
+    result = await pipeline.run_once_interruptible(bytes(buffer), interrupt_event)
+    if result.get('cancelled'):
+        session_events[session_id] = {
+            'version': 1,
+            'session_id': session_id,
+            'turn_id': turn_id,
+            'state': 'interrupted',
+            'transcript': result.get('transcript'),
+            'response': result.get('response'),
+            'metrics': result.get('metrics'),
+            'has_audio': False,
+            'audio_bytes_len': 0,
+            'updated_at': time.time(),
+            'error': None,
+            'speaking': False,
+            'cancelled_stage': result.get('stage'),
+        }
+        buffer.clear()
+        return False
+
     session_events[session_id] = {
         'version': 1,
         'session_id': session_id,
@@ -95,9 +119,13 @@ async def finalize_turn(session_id: str):
     if track and result['audio']:
         session_events[session_id]['state'] = 'speaking'
         session_events[session_id]['speaking'] = True
-        await track.push_wav_bytes(result['audio'])
-        session_events[session_id]['state'] = 'listening'
-        session_events[session_id]['speaking'] = False
+        await track.push_wav_bytes(result['audio'], interrupt_event)
+        if interrupt_event.is_set():
+            session_events[session_id]['state'] = 'interrupted'
+            session_events[session_id]['speaking'] = False
+        else:
+            session_events[session_id]['state'] = 'listening'
+            session_events[session_id]['speaking'] = False
     buffer.clear()
     return True
 
@@ -130,8 +158,14 @@ async def audio_worker(session_id: str, track: MediaStreamTrack):
             session_events[session_id]['state'] = 'receiving_audio'
             session_events[session_id]['updated_at'] = now
 
+            # barge-in: if user speech comes in while bot is speaking, interrupt current output/turn
             if vad.has_speech(pcm):
                 turn_detector.mark_speech(session_id)
+                evt = session_interrupts.setdefault(session_id, asyncio.Event())
+                if session_events.get(session_id, {}).get('speaking'):
+                    evt.set()
+                    session_events[session_id]['state'] = 'interrupted'
+                    session_events[session_id]['speaking'] = False
 
             if len(buffer) >= MIN_BUFFER_BYTES and turn_detector.should_finalize(session_id, now):
                 session_events[session_id]['state'] = 'processing'
@@ -194,6 +228,7 @@ async def offer(body: OfferRequest):
         pcs[body.session_id] = pc
         session_buffers[body.session_id] = bytearray()
         session_turns[body.session_id] = 0
+        session_interrupts[body.session_id] = asyncio.Event()
 
         outbound = OutboundAudioTrack()
         session_outbound_tracks[body.session_id] = outbound
@@ -215,6 +250,7 @@ async def offer(body: OfferRequest):
                 session_buffers.pop(body.session_id, None)
                 session_last_audio_at.pop(body.session_id, None)
                 session_outbound_tracks.pop(body.session_id, None)
+                session_interrupts.pop(body.session_id, None)
                 turn_detector.clear(body.session_id)
 
         await pc.setRemoteDescription(RTCSessionDescription(sdp=body.sdp, type=body.type))
