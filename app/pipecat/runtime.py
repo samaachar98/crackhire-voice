@@ -100,3 +100,8 @@ class PipecatRuntimeBootstrap:
     def normalize_ingress_audio(self, audio_bytes: bytes) -> bytes:
         """Single ingress normalization seam for transport -> Pipecat runtime."""
         return audio_bytes
+
+
+    def normalize_egress_audio(self, audio_bytes: bytes) -> bytes:
+        """Single egress normalization seam for runtime -> transport."""
+        return audio_bytes

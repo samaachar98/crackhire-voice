@@ -115,7 +115,8 @@ async def finalize_turn(session_id: str):
     if track and result['audio']:
         session_events[session_id]['state'] = 'speaking'
         session_events[session_id]['speaking'] = True
-        await track.push_wav_bytes(result['audio'], interrupt_event)
+        output_audio = runtime.normalize_egress_audio(result['audio'])
+        await track.push_wav_bytes(output_audio, interrupt_event)
         if interrupt_event.is_set():
             session_events[session_id]['state'] = 'interrupted'
             session_events[session_id]['speaking'] = False
